@@ -1,15 +1,6 @@
 import { useState, useEffect } from 'react';
 import { toast } from 'react-hot-toast';
-
-const exchangeRates = {
-    CNY: 1,
-    USD: 0.14,
-    EUR: 0.13,
-    JPY: 18.25,
-    GBP: 0.11,
-    KRW: 177.37,
-    HKD: 1.10
-};
+import { fetchExchangeRates } from '../constants/currencies';
 
 // 分组类型配置
 const groupTypes = {
@@ -66,6 +57,123 @@ export default function ProductList({ products, baseCurrency, onRemoveProduct, u
     const [deleteConfirm, setDeleteConfirm] = useState(null);
     const [groupedProducts, setGroupedProducts] = useState({});
     const [activeTab, setActiveTab] = useState(null);
+    const [exchangeRates, setExchangeRates] = useState(null);
+    const [isLoading, setIsLoading] = useState(true);
+
+    // 获取最新汇率
+    useEffect(() => {
+        const getLatestRates = async () => {
+            setIsLoading(true);
+            const rates = await fetchExchangeRates(baseCurrency);
+            if (rates) {
+                setExchangeRates(rates);
+                setIsLoading(false);
+            } else {
+                toast.error('获取汇率失败，请稍后重试');
+                setIsLoading(false);
+            }
+        };
+
+        getLatestRates();
+    }, [baseCurrency]);
+
+    // 转换商品数据
+    useEffect(() => {
+        // 如果还没有汇率数据，等待数据加载
+        if (!exchangeRates) {
+            return;
+        }
+
+        const convertProducts = () => {
+            let converted = products.map(product => {
+                try {
+                    // 货币转换
+                    const productRate = exchangeRates[product.currency] || 1;
+                    const baseRate = exchangeRates[baseCurrency] || 1;
+                    const convertedPrice = product.price * (baseRate / productRate);
+                    
+                    // 获取单位信息和转换
+                    let unitType = null;
+                    let conversionRate = 1;
+                    let baseUnit = '';
+                    let displayName = '';
+
+                    // 查找单位所属类型和转换率
+                    for (const [type, info] of Object.entries(unitSystem)) {
+                        if (info.conversions[product.unit]) {
+                            unitType = type;
+                            conversionRate = info.conversions[product.unit].rate;
+                            baseUnit = info.baseUnit;
+                            displayName = info.displayName;
+                            break;
+                        }
+                    }
+
+                    // 如果找不到对应的单位类型，默认为计件
+                    if (!unitType) {
+                        unitType = 'piece';
+                        conversionRate = 1;
+                        baseUnit = unitSystem.piece.baseUnit;
+                        displayName = unitSystem.piece.displayName;
+                    }
+
+                    // 计算标准化数量和单价
+                    const standardQuantity = product.quantity * conversionRate;
+                    const unitPrice = convertedPrice / standardQuantity;
+
+                    return { 
+                        ...product, 
+                        convertedPrice, 
+                        unitPrice,
+                        standardQuantity,
+                        unitType,
+                        baseUnit,
+                        displayName
+                    };
+                } catch (error) {
+                    console.error('转换商品数据时出错:', error);
+                    return {
+                        ...product,
+                        convertedPrice: product.price,
+                        unitPrice: product.price / product.quantity,
+                        standardQuantity: product.quantity,
+                        unitType: 'piece',
+                        baseUnit: 'piece',
+                        displayName: '计件'
+                    };
+                }
+            });
+
+            // 应用排序
+            converted.sort((a, b) => {
+                if (sortConfig.direction === 'asc') {
+                    return a[sortConfig.key] > b[sortConfig.key] ? 1 : -1;
+                }
+                return a[sortConfig.key] < b[sortConfig.key] ? 1 : -1;
+            });
+
+            // 按单位类型分组
+            const grouped = converted.reduce((acc, product) => {
+                const type = product.unitType;
+                if (!acc[type]) {
+                    acc[type] = [];
+                }
+                acc[type].push(product);
+                return acc;
+            }, {});
+
+            setConvertedProducts(converted);
+            setGroupedProducts(grouped);
+
+            // 设置默认活动标签
+            if (!activeTab || !grouped[activeTab]) {
+                const firstGroupWithProducts = Object.keys(grouped)[0];
+                setActiveTab(firstGroupWithProducts);
+            }
+        };
+
+        convertProducts();
+    }, [products, baseCurrency, sortConfig, unitSystem, exchangeRates]);
 
     // 排序处理函数
     const handleSort = (key) => {
@@ -95,85 +203,6 @@ export default function ProductList({ products, baseCurrency, onRemoveProduct, u
             </svg>
         );
     };
-
-    useEffect(() => {
-        const convertProducts = () => {
-            let converted = products.map(product => {
-                // 货币转换
-                const baseRate = exchangeRates[baseCurrency];
-                const productRate = exchangeRates[product.currency];
-                const convertedPrice = product.price * (baseRate / productRate);
-                
-                // 获取单位信息和转换
-                let unitType = null;
-                let conversionRate = 1;
-                let baseUnit = '';
-                let displayName = '';
-
-                // 查找单位所属类型和转换率
-                for (const [type, info] of Object.entries(unitSystem)) {
-                    if (info.conversions[product.unit]) {
-                        unitType = type;
-                        conversionRate = info.conversions[product.unit].rate;
-                        baseUnit = info.baseUnit;
-                        displayName = info.displayName;
-                        break;
-                    }
-                }
-
-                // 如果找不到对应的单位类型，默认为计件
-                if (!unitType) {
-                    unitType = 'piece';
-                    conversionRate = 1;
-                    baseUnit = unitSystem.piece.baseUnit;
-                    displayName = unitSystem.piece.displayName;
-                }
-
-                // 计算标准化数量和单价
-                const standardQuantity = product.quantity * conversionRate;
-                const unitPrice = convertedPrice / standardQuantity;
-
-                return { 
-                    ...product, 
-                    convertedPrice, 
-                    unitPrice,
-                    standardQuantity,
-                    unitType,
-                    baseUnit,
-                    displayName
-                };
-            });
-
-            // 应用排序
-            converted.sort((a, b) => {
-                if (sortConfig.direction === 'asc') {
-                    return a[sortConfig.key] > b[sortConfig.key] ? 1 : -1;
-                }
-                return a[sortConfig.key] < b[sortConfig.key] ? 1 : -1;
-            });
-
-            // 按单位类型分组
-            const grouped = converted.reduce((acc, product) => {
-                const type = product.unitType;
-                if (!acc[type]) {
-                    acc[type] = [];
-                }
-                acc[type].push(product);
-                return acc;
-            }, {});
-
-            setConvertedProducts(converted);
-            setGroupedProducts(grouped);
-            
-            // 如果没有选中的标签，或者选中的标签对应的分组没有商品，
-            // 则自动选择第一个有商品的分组
-            if (!activeTab || !grouped[activeTab]) {
-                const firstGroupWithProducts = Object.keys(grouped)[0];
-                setActiveTab(firstGroupWithProducts);
-            }
-        };
-        convertProducts();
-    }, [products, baseCurrency, sortConfig, unitSystem]);
 
     const handleDelete = (index) => {
         if (deleteConfirm === index) {
